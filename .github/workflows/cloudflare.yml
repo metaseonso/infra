@@ -1,6 +1,6 @@
-# Calls the Cloudflare API with the CLOUDFLARE_API_TOKEN secret.
-# The token never leaves GitHub. Run with:
-#   gh workflow run cloudflare.yml --repo metaseonso/infra -f method=GET -f path=zones
+# Calls the Cloudflare API with the CLOUDFLARE_API_TOKEN secret. The token never leaves GitHub.
+# One call:   gh workflow run cloudflare.yml --repo metaseonso/infra -f method=GET -f path=zones
+# Many calls: gh workflow run cloudflare.yml --repo metaseonso/infra -f calls='[{"method":"GET","path":"zones"}]'
 name: cloudflare
 
 on:
@@ -8,13 +8,18 @@ on:
     inputs:
       method:
         description: HTTP method (GET, POST, PUT, PATCH, DELETE)
-        required: true
+        required: false
         default: GET
       path:
         description: API path after https://api.cloudflare.com/client/v4/
-        required: true
+        required: false
+        default: ""
       body:
         description: JSON body (optional)
+        required: false
+        default: ""
+      calls:
+        description: 'JSON array of {"method","path","body"} to run in order (overrides method/path/body)'
         required: false
         default: ""
 
@@ -30,9 +35,18 @@ jobs:
           METHOD: ${{ inputs.method }}
           API_PATH: ${{ inputs.path }}
           BODY: ${{ inputs.body }}
+          CALLS: ${{ inputs.calls }}
         run: |
           set -euo pipefail
-          case "$METHOD" in GET|POST|PUT|PATCH|DELETE) ;; *) echo "bad method: $METHOD"; exit 1 ;; esac
-          args=(-sS -X "$METHOD" -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json")
-          if [ -n "$BODY" ]; then args+=(--data "$BODY"); fi
-          curl "${args[@]}" "https://api.cloudflare.com/client/v4/${API_PATH#/}" | jq .
+          if [ -z "$CALLS" ]; then
+            CALLS=$(jq -cn --arg m "$METHOD" --arg p "$API_PATH" --arg b "$BODY" '[{method:$m, path:$p, body:$b}]')
+          fi
+          echo "$CALLS" | jq -c '.[]' | while read -r call; do
+            m=$(jq -r '.method // "GET"' <<<"$call"); p=$(jq -r '.path' <<<"$call")
+            b=$(jq -c 'if (.body // "") == "" then "" elif (.body|type) == "string" then .body else .body end' <<<"$call" | jq -r 'if type=="string" then . else tojson end')
+            case "$m" in GET|POST|PUT|PATCH|DELETE) ;; *) echo "bad method: $m"; exit 1 ;; esac
+            args=(-sS -X "$m" -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json")
+            if [ -n "$b" ]; then args+=(--data "$b"); fi
+            echo "=== $m $p"
+            curl "${args[@]}" "https://api.cloudflare.com/client/v4/${p#/}" | jq -c '{success, errors, result}'
+          done
