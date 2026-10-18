@@ -25,13 +25,18 @@ jobs:
         run: |
           set -euo pipefail
           api() { curl -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" "$@"; }
-          CLOUDFLARE_ACCOUNT_ID=$(api https://api.cloudflare.com/client/v4/accounts | jq -r '.result[0].id')
+          # Every Cloudflare answer is checked; on failure only its error messages are shown (no ids).
+          need() { if [ "$(jq -r .success <<<"$2")" != true ]; then echo "$1 failed: $(jq -c '[.errors[]?.message]' <<<"$2")"; exit 1; fi; }
+          r=$(api https://api.cloudflare.com/client/v4/accounts); need "list accounts" "$r"
+          CLOUDFLARE_ACCOUNT_ID=$(jq -r '.result[0].id' <<<"$r")
           echo "::add-mask::$CLOUDFLARE_ACCOUNT_ID"
           export CLOUDFLARE_ACCOUNT_ID
           base="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces"
-          ns=$(api "$base?per_page=100" | jq -r '.result[] | select(.title=="circle-watch-state") | .id')
+          r=$(api "$base?per_page=100"); need "list KV namespaces" "$r"
+          ns=$(jq -r '.result[] | select(.title=="circle-watch-state") | .id' <<<"$r")
           if [ -z "$ns" ]; then
-            ns=$(api -X POST "$base" --data '{"title":"circle-watch-state"}' | jq -r '.result.id')
+            r=$(api -X POST "$base" --data '{"title":"circle-watch-state"}'); need "create KV namespace" "$r"
+            ns=$(jq -r '.result.id' <<<"$r")
           fi
           echo "::add-mask::$ns"
           cd watcher
