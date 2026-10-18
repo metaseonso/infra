@@ -5,6 +5,11 @@ name: watcher
 
 on:
   workflow_dispatch:
+    inputs:
+      inspect:
+        description: Only show the watcher's state and schedule (no deploy)
+        required: false
+        default: "no"
   push:
     branches: [main]
     paths: [watcher/**, .github/workflows/watcher.yml]
@@ -39,6 +44,12 @@ jobs:
             ns=$(jq -r '.result.id' <<<"$r")
           fi
           echo "::add-mask::$ns"
+          if [ "${{ inputs.inspect }}" = "yes" ]; then
+            echo "state: $(api "$base/$ns/values/state")"
+            r=$(api "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/circle-watch/schedules")
+            echo "schedules: $(jq -c '{success, errors: [.errors[]?.message], crons: [.result.schedules[]?.cron]}' <<<"$r")"
+            exit 0
+          fi
           cd watcher
           cat > wrangler.toml <<EOF
           name = "circle-watch"
