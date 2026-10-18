@@ -1,6 +1,10 @@
 # Calls the Cloudflare API with the CLOUDFLARE_API_TOKEN secret. The token never leaves GitHub.
 # One call:   gh workflow run cloudflare.yml --repo metaseonso/infra -f method=GET -f path=zones
 # Many calls: gh workflow run cloudflare.yml --repo metaseonso/infra -f calls='[{"method":"GET","path":"zones"}]'
+#
+# This repository is public, so its logs are public. The log shows only success and error messages;
+# the full answers are encrypted with age to the Summoner's key (the backup key) and printed armored.
+# Read them on the Summoner's PC with the backup identity (~/.config/pap0/backup-identity.txt).
 name: cloudflare
 
 on:
@@ -25,10 +29,15 @@ on:
 
 permissions: {}
 
+env:
+  SUMMONER_AGE_KEY: age1q34uujz44hl6ulp0uvrx4v78pqdcd0p7r2r6tax6m55926du337syqlchn
+
 jobs:
   call:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
+      - name: Install age
+        run: sudo apt-get install -y -qq age >/dev/null
       - name: Call the Cloudflare API
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -41,12 +50,17 @@ jobs:
           if [ -z "$CALLS" ]; then
             CALLS=$(jq -cn --arg m "$METHOD" --arg p "$API_PATH" --arg b "$BODY" '[{method:$m, path:$p, body:$b}]')
           fi
-          echo "$CALLS" | jq -c '.[]' | while read -r call; do
+          full=$(mktemp)
+          while read -r call; do
             m=$(jq -r '.method // "GET"' <<<"$call"); p=$(jq -r '.path' <<<"$call")
             b=$(jq -c 'if (.body // "") == "" then "" elif (.body|type) == "string" then .body else .body end' <<<"$call" | jq -r 'if type=="string" then . else tojson end')
             case "$m" in GET|POST|PUT|PATCH|DELETE) ;; *) echo "bad method: $m"; exit 1 ;; esac
             args=(-sS -X "$m" -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json")
             if [ -n "$b" ]; then args+=(--data "$b"); fi
-            echo "=== $m $p"
-            curl "${args[@]}" "https://api.cloudflare.com/client/v4/${p#/}" | jq -c '{success, errors, result}'
-          done
+            answer=$(curl "${args[@]}" "https://api.cloudflare.com/client/v4/${p#/}")
+            echo "=== $m $p" | tee -a "$full"
+            jq -c '{success, errors: [.errors[]?.message]}' <<<"$answer"
+            jq -c '{success, errors, result}' <<<"$answer" >> "$full"
+          done < <(jq -c '.[]' <<<"$CALLS")
+          echo "=== full answers (age, Summoner's key)"
+          age -r "$SUMMONER_AGE_KEY" -a < "$full"
